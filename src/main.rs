@@ -1,12 +1,13 @@
 // ============================================================
-//  wezfont —— wezterm 字体选择 TUI（主字体 + fallback 链）
+//  wezfont - a font picker TUI for WezTerm (primary font + fallback chain)
 //
-//  两个页面，Tab 切换：
-//    1. 主字体  —— 选中回车即可应用
-//    2. Fallback —— 回车把字体加入/移出回退链（中文、符号回退）
+//  Two pages, switch with Tab:
+//    1. Primary  - Enter applies the selected font
+//    2. Fallback - Enter adds/removes it from the fallback chain
 //
-//  任何改动都会写 ~/.wezterm-font.lua，并只更新 ~/.wezterm.lua 的 mtime，
-//  wezterm 监听到配置变化会自动重载 —— 右边样张当场变成新字体，即实时预览。
+//  Every change is written to ~/.wezterm-font.lua, then only the mtime of
+//  ~/.wezterm.lua is bumped so WezTerm reloads and the preview pane
+//  re-renders with the new font immediately (live preview).
 // ============================================================
 use std::fs;
 use std::io;
@@ -23,16 +24,16 @@ use ratatui::{DefaultTerminal, Frame};
 const SAMPLE: &[&str] = &[
     "The quick brown fox jumps over the lazy dog",
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ 0123456789",
-    "中文测试：你好，世界。全角标点：，。！？「」",
-    "框线: ─ │ ┌ ┐ └ ┘ █ ▓ ▒ ░ ▏",
-    "符号: ◆ ● ★ ☆ ✓ ✗ ❯ ❮ ⚡",
+    "CJK: 中文测试 你好，世界。，。！？「」",
+    "Box:      ─ │ ┌ ┐ └ ┘ █ ▓ ▒ ░ ▏",
+    "Symbols:  ◆ ● ★ ☆ ✓ ✗ ❯ ❮ ⚡",
     "Nerd: \u{f07b} \u{e0a0} \u{f121} \u{e5ff} \u{f1b2} \u{f0e7} \u{f07c}",
-    "连字: -> => != === >= <= |> |> <|",
+    "Ligatures:-> => != === >= <= |> |> <|",
 ];
 
-/// 找 Windows 用户家目录。
-/// 从 WSL 启动时 USERPROFILE 可能为空（WSL 不会设置它），
-/// 依次退：USERPROFILE → HOMEDRIVE+HOMEPATH → 问一下 cmd.exe → 当前目录。
+/// Locate the Windows home directory.
+/// When launched from WSL, USERPROFILE can be empty, so fall back to
+/// HOMEDRIVE+HOMEPATH, then ask cmd.exe, then the current directory.
 fn home() -> PathBuf {
     if let Ok(p) = std::env::var("USERPROFILE") {
         if !p.trim().is_empty() {
@@ -44,7 +45,7 @@ fn home() -> PathBuf {
     if !drive.is_empty() && !path.is_empty() {
         return PathBuf::from(format!("{drive}{path}"));
     }
-    // 最后手段：问 cmd.exe（WSL interop 下能拿到 Windows 侧的值）
+    // last resort: ask cmd.exe (works through WSL interop)
     if let Ok(out) = Command::new("cmd.exe")
         .args(["/c", "echo", "%USERPROFILE%"])
         .output()
@@ -70,8 +71,8 @@ fn default_fallback() -> Vec<String> {
     vec!["Microsoft YaHei".into(), "Cascadia Code".into()]
 }
 
-/// 找 wezterm 可执行文件：从 WSL 启动时 WEZTERM_EXECUTABLE 是 Windows 路径，
-/// Windows 进程可以直接用；原生运行时同样适用。
+/// Locate wezterm.exe. WEZTERM_EXECUTABLE is a Windows path and can be used
+/// directly by this Windows process, both natively and from WSL.
 fn find_wezterm_exe() -> PathBuf {
     if let Ok(p) = std::env::var("WEZTERM_EXECUTABLE") {
         let pb = PathBuf::from(p);
@@ -122,7 +123,7 @@ fn load_cached() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 从一段文本里抽出所有双引号字符串
+/// Extract every double-quoted string from the text
 fn quoted(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = s;
@@ -139,7 +140,7 @@ fn quoted(s: &str) -> Vec<String> {
     out
 }
 
-/// 读保存文件 → (主字体, fallback 链)
+/// Read the saved file -> (primary, fallback chain)
 fn load_saved() -> (Option<String>, Vec<String>) {
     match fs::read_to_string(font_lua_path()) {
         Ok(src) => parse_saved(&src),
@@ -147,7 +148,7 @@ fn load_saved() -> (Option<String>, Vec<String>) {
     }
 }
 
-/// 解析保存文件的文本（新格式 table / 老格式字符串）
+/// Parse the saved file (table format, or the legacy plain string)
 fn parse_saved(src: &str) -> (Option<String>, Vec<String>) {
     let mut primary = None;
     let mut chain: Vec<String> = Vec::new();
@@ -161,7 +162,7 @@ fn parse_saved(src: &str) -> (Option<String>, Vec<String>) {
         } else if let Some(rest) = line.strip_prefix("fallback =") {
             chain = quoted(rest);
         } else if let Some(rest) = line.strip_prefix("return \"") {
-            // 老格式：return "字体名"
+            // legacy format: return "Font Name"
             primary = rest.split('"').next().map(|s| s.to_string());
         }
     }
@@ -172,9 +173,9 @@ fn parse_saved(src: &str) -> (Option<String>, Vec<String>) {
     (primary, chain)
 }
 
-/// 写主字体 + fallback 链，并只更新主配置的 mtime 触发 wezterm 重载
+/// Write primary + fallback chain, then touch the main config so WezTerm reloads
 fn render_saved(primary: Option<&str>, chain: &[String]) -> String {
-    let mut body = String::from("-- 由 wezfont 写入（删掉本文件即恢复配置里的字体）\nreturn {\n");
+    let mut body = String::from("-- written by wezfont (delete this file to go back to the config)\nreturn {\n");
     if let Some(p) = primary {
         body.push_str(&format!("  font = {:?},\n", p));
     }
@@ -211,15 +212,15 @@ struct App {
 impl App {
     fn new() -> Self {
         let mut all = load_cached();
-        let mut status = format!("已从缓存加载 {} 个字体（按 r 重新扫描）", all.len());
+        let mut status = format!("Loaded {} fonts from cache (press r to rescan)", all.len());
         if all.is_empty() {
             match scan_fonts() {
                 Ok(list) => {
                     all = list;
-                    status = format!("扫描到 {} 个字体（已写入缓存）", all.len());
+                    status = format!("Found {} fonts (cache written)", all.len());
                     let _ = fs::write(cache_path(), all.join("\n") + "\n");
                 }
-                Err(e) => status = format!("扫描失败: {e}"),
+                Err(e) => status = format!("scan failed: {e}"),
             }
         }
         let (primary, chain) = load_saved();
@@ -256,29 +257,29 @@ impl App {
     }
 
     fn rescan(&mut self) {
-        self.status = "正在扫描（约 2 秒）...".into();
+        self.status = "Scanning (about 2s)...".into();
         match scan_fonts() {
             Ok(list) => {
                 self.all = list;
                 let _ = fs::write(cache_path(), self.all.join("\n") + "\n");
-                self.status = format!("扫描到 {} 个字体", self.all.len());
+                self.status = format!("Found {} fonts", self.all.len());
                 self.refilter();
             }
-            Err(e) => self.status = format!("扫描失败: {e}"),
+            Err(e) => self.status = format!("scan failed: {e}"),
         }
     }
 
     fn persist(&mut self, msg: String) {
         match save_saved(self.primary.as_deref(), &self.chain) {
             Ok(()) => self.status = msg,
-            Err(e) => self.status = format!("写入失败: {e}"),
+            Err(e) => self.status = format!("write failed: {e}"),
         }
     }
 
     fn choose_primary(&mut self) {
         if let Some(name) = self.selected_name() {
             self.primary = Some(name.clone());
-            self.persist(format!("主字体 → {name}（wezterm 会自动重载）"));
+            self.persist(format!("primary -> {name} (WezTerm reloads automatically)"));
         }
     }
 
@@ -286,17 +287,17 @@ impl App {
         let Some(name) = self.selected_name() else { return };
         if let Some(pos) = self.chain.iter().position(|c| *c == name) {
             self.chain.remove(pos);
-            self.persist(format!("已从回退链移除：{name}"));
+            self.persist(format!("removed from fallback chain: {name}"));
         } else {
             self.chain.push(name.clone());
-            self.persist(format!("已加入回退链（第 {} 位）：{name}", self.chain.len()));
+            self.persist(format!("added to fallback chain (#{}): {name}", self.chain.len()));
         }
     }
 
     fn move_in_chain(&mut self, up: bool) {
         let Some(name) = self.selected_name() else { return };
         let Some(pos) = self.chain.iter().position(|c| *c == name) else {
-            self.status = "先按 Enter 把它加入回退链".into();
+            self.status = "press Enter first to add it to the chain".into();
             return;
         };
         let new_pos = if up {
@@ -306,7 +307,7 @@ impl App {
         };
         if new_pos != pos {
             self.chain.swap(pos, new_pos);
-            self.persist(format!("回退链第 {} 位 ↔ 第 {} 位", pos + 1, new_pos + 1));
+            self.persist(format!("fallback chain: {} <-> {}", pos + 1, new_pos + 1));
         }
     }
 }
@@ -323,7 +324,7 @@ fn main() -> io::Result<()> {
     result
 }
 
-/// 非交互（脚本 / WSL）用的命令行接口
+/// Non-interactive CLI (scripts, WSL)
 fn cli(args: &[String]) -> i32 {
     let mut i = 0;
     let mut primary_change: Option<String> = None;
@@ -334,39 +335,39 @@ fn cli(args: &[String]) -> i32 {
         match args[i].as_str() {
             "--help" | "-h" => {
                 println!(
-                    "wezfont —— wezterm 字体选择器\n\
-                     \n\
-                     不带参数运行：打开 TUI（Tab 切主字体 / Fallback 页）\n\
-                     \n\
-                     命令行模式（适合脚本 / WSL）：\n\
-                     \t--info                     显示检测到的路径、字体数、当前主字体和回退链\n\
-                     \t--list                     列出可用字体（一行一个）\n\
-                     \t--current                  打印当前主字体\n\
-                     \t--set <字体名>             设主字体\n\
-                     \t--fallback <A,B,...>       设回退链（逗号分隔，引号包住）\n\
-                     \t--scan                     重新扫描系统字体并更新缓存\n\
-                     \t--help                     显示本帮助"
+                    "wezfont - a font picker for WezTerm
+                     
+                     No arguments: open the TUI (Tab switches primary / fallback)
+                     
+                     Command line (scripts, WSL):
+                     	--info                     show detected paths, font count, current font and chain
+                     	--list                     list available fonts (one per line)
+                     	--current                  print the current primary font
+                     	--set <font>               set the primary font
+                     	--fallback <A,B,...>       set the fallback chain (comma separated)
+                     	--scan                     rescan system fonts and refresh the cache
+                     	--help                     show this help"
                 );
             }
             "--info" => {
                 let (primary, chain) = load_saved();
                 println!("wezfont {}", env!("CARGO_PKG_VERSION"));
-                println!("  家目录       : {}", home().display());
-                println!("  字体缓存     : {}", cache_path().display());
-                println!("  保存文件     : {}", font_lua_path().display());
+                println!("  home dir     : {}", home().display());
+                println!("  font cache   : {}", cache_path().display());
+                println!("  saved file   : {}", font_lua_path().display());
                 println!("  wezterm      : {}", find_wezterm_exe().display());
-                println!("  字体数       : {}", load_cached().len());
+                println!("  fonts        : {}", load_cached().len());
                 println!(
-                    "  主字体       : {}",
-                    primary.unwrap_or_else(|| "(配置里的默认)".into())
+                    "  primary      : {}",
+                    primary.unwrap_or_else(|| "(from config)".into())
                 );
-                println!("  回退链       : {}", chain.join(" → "));
+                println!("  fallback     : {}", chain.join(" → "));
                 if std::env::var("WSL_DISTRO_NAME").is_ok()
                     || fs::read_to_string("/proc/version")
                         .map(|v| v.to_lowercase().contains("microsoft"))
                         .unwrap_or(false)
                 {
-                    println!("  运行环境     : WSL（字体依然是 Windows 侧的，配置写回 Windows 家目录）");
+                    println!("  environment  : WSL (fonts stay Windows-side, config goes to the Windows home)");
                 }
             }
             "--list" => {
@@ -375,7 +376,7 @@ fn cli(args: &[String]) -> i32 {
                     match scan_fonts() {
                         Ok(l) => list = l,
                         Err(e) => {
-                            eprintln!("扫描失败: {e}");
+                            eprintln!("scan failed: {e}");
                             code = 1;
                         }
                     }
@@ -386,14 +387,14 @@ fn cli(args: &[String]) -> i32 {
             }
             "--current" => match load_saved().0 {
                 Some(p) => println!("{p}"),
-                None => println!("(配置里的默认字体)"),
+                None => println!("(default from config)"),
             },
             "--set" => {
                 i += 1;
                 match args.get(i) {
                     Some(name) => primary_change = Some(name.clone()),
                     None => {
-                        eprintln!("--set 需要字体名");
+                        eprintln!("--set needs a font name");
                         code = 2;
                     }
                 }
@@ -410,7 +411,7 @@ fn cli(args: &[String]) -> i32 {
                         );
                     }
                     None => {
-                        eprintln!("--fallback 需要 'A,B' 这样的字体名列表");
+                        eprintln!("--fallback needs a list like 'A,B'");
                         code = 2;
                     }
                 }
@@ -418,15 +419,15 @@ fn cli(args: &[String]) -> i32 {
             "--scan" => match scan_fonts() {
                 Ok(list) => {
                     let _ = fs::write(cache_path(), list.join("\n") + "\n");
-                    println!("已扫描到 {} 个字体", list.len());
+                    println!("Found {} fonts", list.len());
                 }
                 Err(e) => {
-                    eprintln!("扫描失败: {e}");
+                    eprintln!("scan failed: {e}");
                     code = 1;
                 }
             },
             other => {
-                eprintln!("未知参数: {other}（用 --help 看用法）");
+                eprintln!("unknown argument: {other} (see --help)");
                 code = 2;
             }
         }
@@ -440,17 +441,17 @@ fn cli(args: &[String]) -> i32 {
         match save_saved(primary.as_deref(), &chain) {
             Ok(()) => {
                 println!(
-                    "已保存：主字体 = {}；回退链 = {}",
-                    primary.as_deref().unwrap_or("(默认)"),
+                    "saved: primary = {}; fallback = {}",
+                    primary.as_deref().unwrap_or("(default)"),
                     if chain.is_empty() {
-                        "(空)".to_string()
+                        "(empty)".to_string()
                     } else {
                         chain.join(" → ")
                     }
                 );
             }
             Err(e) => {
-                eprintln!("写入失败: {e}");
+                eprintln!("write failed: {e}");
                 code = 1;
             }
         }
@@ -480,8 +481,8 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
                     Page::Primary
                 };
                 app.status = match app.page {
-                    Page::Primary => "页面：主字体（Enter 应用）".into(),
-                    Page::Fallback => "页面：Fallback 回退链（Enter 加入/移除，Shift+J/K 调顺序）".into(),
+                    Page::Primary => "page: primary font (Enter applies)".into(),
+                    Page::Fallback => "page: fallback chain (Enter add/remove, Shift+J/K reorder)".into(),
                 };
             }
             KeyCode::Esc => {
@@ -542,10 +543,10 @@ fn draw(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(chunks[1]);
 
-    // ---- 顶部：标题 + 当前状态 ----
+    // ---- header ----
     let page_label = match app.page {
         Page::Primary => Span::styled(
-            " 主字体 ",
+            " Primary ",
             Style::default().fg(Color::Black).bg(Color::LightBlue),
         ),
         Page::Fallback => Span::styled(
@@ -563,16 +564,16 @@ fn draw(f: &mut Frame, app: &mut App) {
         ),
         Span::raw(" "),
         page_label,
-        Span::raw("  主字体: "),
+        Span::raw("  primary: "),
         Span::styled(
-            app.primary.clone().unwrap_or_else(|| "(配置里的默认)".into()),
+            app.primary.clone().unwrap_or_else(|| "(from config)".into()),
             Style::default().fg(Color::LightGreen),
         ),
         Span::raw(format!("   ({}/{})", app.filtered.len(), app.all.len())),
     ]));
     f.render_widget(title, chunks[0]);
 
-    // ---- 左：字体列表 ----
+    // ---- left: font list ----
     let items: Vec<ListItem> = app
         .filtered
         .iter()
@@ -600,13 +601,13 @@ fn draw(f: &mut Frame, app: &mut App) {
         .collect();
 
     let filter = if app.filter.is_empty() {
-        "全部".to_string()
+        "all".to_string()
     } else {
         format!("/{}", app.filter)
     };
     let left_title = match app.page {
-        Page::Primary => format!(" 主字体 ({filter}) "),
-        Page::Fallback => format!(" Fallback 回退链 ({filter}) "),
+        Page::Primary => format!(" Primary ({filter}) "),
+        Page::Fallback => format!(" Fallback chain ({filter}) "),
     };
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(left_title))
@@ -623,10 +624,10 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
     f.render_stateful_widget(list, body[0], &mut state);
 
-    // ---- 右：样张 + 回退链 ----
+    // ---- right: preview + chain ----
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        app.primary.clone().unwrap_or_else(|| "(默认字体)".into()),
+        app.primary.clone().unwrap_or_else(|| "(default)".into()),
         Style::default()
             .fg(Color::LightYellow)
             .add_modifier(Modifier::BOLD),
@@ -637,12 +638,12 @@ fn draw(f: &mut Frame, app: &mut App) {
         lines.push(Line::from(""));
     }
     lines.push(Line::from(Span::styled(
-        "回退链（按顺序尝试，越前优先级越高）:",
+        "Fallback chain (tried in order, top first):",
         Style::default().fg(Color::DarkGray),
     )));
     if app.chain.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  (空 —— 只有主字体，缺字会显示方块)",
+            "  (empty - only the primary font, missing glyphs show as boxes)",
             Style::default().fg(Color::Red),
         )));
     } else {
@@ -655,29 +656,29 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
 
     let preview = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" 样张 + 回退链 "))
+        .block(Block::default().borders(Borders::ALL).title(" Preview + fallback chain "))
         .wrap(Wrap { trim: false });
     f.render_widget(preview, body[1]);
 
-    // ---- 底部：帮助 + 状态 ----
+    // ---- footer ----
     let help = Line::from(vec![
         Span::styled(" Tab ", Style::default().fg(Color::LightCyan)),
-        Span::raw("切页  "),
+        Span::raw("page  "),
         Span::styled("↑↓ ", Style::default().fg(Color::LightBlue)),
-        Span::raw("选择  "),
+        Span::raw("select  "),
         Span::styled("Enter ", Style::default().fg(Color::LightBlue)),
         Span::raw(match app.page {
-            Page::Primary => "应用主字体  ",
-            Page::Fallback => "加入/移除回退  ",
+            Page::Primary => "apply primary font  ",
+            Page::Fallback => "add/remove fallback  ",
         }),
         Span::styled("Shift+J/K ", Style::default().fg(Color::LightBlue)),
-        Span::raw("调回退顺序  "),
+        Span::raw("reorder chain  "),
         Span::styled("Esc ", Style::default().fg(Color::LightBlue)),
-        Span::raw("清过滤/退出  "),
+        Span::raw("clear filter/quit  "),
         Span::styled("r ", Style::default().fg(Color::LightBlue)),
-        Span::raw("重扫  "),
+        Span::raw("rescan  "),
         Span::styled("q ", Style::default().fg(Color::LightBlue)),
-        Span::raw("退出"),
+        Span::raw("quit"),
     ]);
     f.render_widget(Paragraph::new(help), chunks[2]);
 
