@@ -1,39 +1,66 @@
 # wezfont
 
-wezterm 的字体选择 TUI：主字体 + fallback 回退链，选中即写 `~/.wezterm-font.lua`，
-并只更新 `~/.wezterm.lua` 的 mtime 触发 wezterm 热重载 —— 样张当场变化，即实时预览。
+**English** | [中文](README.zh-CN.md)
 
-## 用法
+A font picker TUI for [WezTerm](https://wezterm.org).
+
+Pick a main font and manage the fallback chain, with **live preview**: the choice is
+written to `~/.wezterm-font.lua`, then the mtime of `~/.wezterm.lua` is bumped so
+WezTerm reloads and the sample text re-renders in the new font immediately.
+
+## Usage
 
 ```bash
-wezfont              # 打开 TUI
-wezfont --info       # 看检测到的路径 / 字体数 / 当前字体
-wezfont --list       # 列出字体
+wezfont              # open the TUI
+wezfont --info       # detected paths, font count, current font and chain
+wezfont --list       # list available font families
 wezfont --set "Consolas"
 wezfont --fallback "Microsoft YaHei,Cascadia Code"
-wezfont --scan       # 重新扫描系统字体
+wezfont --scan       # rescan system fonts and refresh the cache
 ```
 
-TUI 里：
+### Keys
 
-| 键 | 作用 |
-|---|---|
-| `Tab` | 主字体 ⇄ Fallback 回退链 |
-| `↑↓` / 打字 | 选择 / 过滤 |
-| `Enter` | 应用（主字体页）或加入/移除回退链（Fallback 页） |
-| `Shift+J/K` | 调整回退链顺序 |
-| `r` | 重新扫描字体 |
-| `Esc` | 清过滤 / 退出 |
+| Key | Action |
+| --- | --- |
+| `Tab` | switch between main font / fallback chain |
+| `↑↓` or type | move / fuzzy-filter |
+| `Enter` | apply the main font, or add/remove a fallback |
+| `Shift+J` / `Shift+K` | reorder the selected fallback |
+| `r` | rescan fonts |
+| `Esc` | clear the filter, or quit |
 
-## 安装
+## What gets written
+
+`~/.wezterm-font.lua`:
+
+```lua
+return {
+  font = "0xProto Nerd Font Mono",
+  fallback = { "Microsoft YaHei", "Cascadia Code" },
+}
+```
+
+Your `~/.wezterm.lua` reads that file and builds a `wezterm.font_with_fallback` chain.
+Delete the file to fall back to the font configured by hand.
+
+## Install
 
 ```bash
 wezext install wezfont
-# 或者从源码：
+# or, from source:
 wezext install --build wezfont
 ```
 
 ## WSL
 
-字体始终是 **Windows 侧**的（wezterm GUI 在 Windows 上渲染），
-所以从 WSL shell 里启动也行，家目录会自动解析到 `C:\Users\<你>`。
+Fonts are always **Windows-side** (the WezTerm GUI renders on Windows), so running
+`wezfont` from a WSL shell works fine — the Windows home directory is resolved
+automatically.
+
+## Build
+
+```bash
+cargo build --release
+# -> target/release/wezfont.exe
+```
